@@ -73,7 +73,9 @@ If `DATABASE_URL` is missing, the process still starts, but DB tools return an e
 
 ## Cursor setup
 
-In **Cursor Settings → MCP**, register a server. Use **absolute paths** for `node` and `dist/index.js`, and pass `DATABASE_URL` under `env`.
+In **Cursor Settings → MCP**, register a server. Use **absolute paths** for `node` and the entry script, and pass `DATABASE_URL` under `env`.
+
+**Entry script:** prefer **`dist/index.js`** after `npm run build`. The repo root **`index.js`** is a thin shim that loads `dist/index.js` (so configs that point at `…/mcp-pgs-tool/index.js` work once the project is built).
 
 ### Windows example
 
