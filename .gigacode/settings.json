@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mcp-pgs-tool": {
+      "command": "node",
+      "args": [
+        "C:/Users/Dell Inspiron 15/IdeaProjects/mcp-pgs-tool/index.js"
+      ],
+      "env": {
+        "DATABASE_URL": "postgresql://DB_USER:DB_PASSWORD@HOST:5432/DB_NAME"
+      }
+    }
+  }
+}

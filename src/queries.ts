@@ -1,14 +1,17 @@
 import type pg from "pg";
+import { safeQuery } from "./db.js";
 
 export async function getServerInfo(client: pg.PoolClient) {
-  const v = await client.query<{ version: string; current_database: string }>(
+  const v = await safeQuery<{ version: string; current_database: string }>(
+    client,
     `SELECT version(), current_database()`
   );
   return v.rows[0];
 }
 
 export async function listSchemas(client: pg.PoolClient) {
-  const r = await client.query<{ schema_name: string }>(
+  const r = await safeQuery<{ schema_name: string }>(
+    client,
     `SELECT schema_name FROM information_schema.schemata
      WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
      ORDER BY schema_name`
@@ -44,7 +47,7 @@ export async function listTables(
       AND c.table_schema NOT IN ('pg_catalog', 'information_schema')
       ${schemaFilter}
     ORDER BY c.table_schema, c.table_name`;
-  const r = await client.query<TableRow>(sql, params);
+  const r = await safeQuery<TableRow>(client, sql, params);
   return r.rows;
 }
 
@@ -75,7 +78,7 @@ export async function listColumnsForTables(
     FROM information_schema.columns c
     WHERE (c.table_schema, c.table_name) IN (${values})
     ORDER BY c.table_schema, c.table_name, c.ordinal_position`;
-  const r = await client.query<ColumnBrief>(sql, params);
+  const r = await safeQuery<ColumnBrief>(client, sql, params);
   return r.rows;
 }
 
@@ -99,7 +102,7 @@ export async function listColumns(
     FROM information_schema.columns c
     WHERE ${filters.join(" AND ")}
     ORDER BY c.table_schema, c.table_name, c.ordinal_position`;
-  const r = await client.query<ColumnRow>(sql, params);
+  const r = await safeQuery<ColumnRow>(client, sql, params);
   return r.rows;
 }
 
@@ -138,7 +141,7 @@ export async function tableStatistics(
     ORDER BY (COALESCE(seq_tup_read,0) + COALESCE(idx_tup_fetch,0)
               + COALESCE(n_tup_ins,0) + COALESCE(n_tup_upd,0) + COALESCE(n_tup_del,0)) ${dir}
     LIMIT $1`;
-  const r = await client.query<TableStatRow>(sql, [opts.limit]);
+  const r = await safeQuery<TableStatRow>(client, sql, [opts.limit]);
   return r.rows;
 }
 
@@ -168,7 +171,7 @@ export async function columnStatistics(
       AND null_frac >= $2
     ORDER BY null_frac DESC, abs(n_distinct) ASC NULLS LAST
     LIMIT $1`;
-  const r = await client.query<ColumnStatRow>(sql, [opts.limit, minNull]);
+  const r = await safeQuery<ColumnStatRow>(client, sql, [opts.limit, minNull]);
   return r.rows;
 }
 
@@ -213,12 +216,13 @@ export async function columnsNotInAnyIndex(
       )
     ORDER BY col.table_schema, col.table_name, col.column_name
     LIMIT $1`;
-  const r = await client.query<UnindexedColumnRow>(sql, [opts.limit]);
+  const r = await safeQuery<UnindexedColumnRow>(client, sql, [opts.limit]);
   return r.rows;
 }
 
 export async function hasPgStatStatements(client: pg.PoolClient): Promise<boolean> {
-  const r = await client.query<{ exists: boolean }>(
+  const r = await safeQuery<{ exists: boolean }>(
+    client,
     `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements') AS exists`
   );
   return Boolean(r.rows[0]?.exists);
@@ -228,7 +232,8 @@ export async function hasPgStatStatements(client: pg.PoolClient): Promise<boolea
 export async function pgStatStatementsUsesExecTimeColumns(
   client: pg.PoolClient
 ): Promise<boolean> {
-  const r = await client.query<{ ok: boolean }>(
+  const r = await safeQuery<{ ok: boolean }>(
+    client,
     `SELECT EXISTS (
        SELECT 1
        FROM pg_catalog.pg_attribute a
@@ -328,7 +333,7 @@ export async function pgStatStatementsTop(
     WHERE ${where.join(" AND ")}
     ORDER BY ${sortCol} DESC NULLS LAST
     LIMIT $${limitIdx}`;
-  const r = await client.query<StatStatementRow>(sql, params);
+  const r = await safeQuery<StatStatementRow>(client, sql, params);
   return r.rows;
 }
 
@@ -339,7 +344,8 @@ export async function pgStatStatementsInfo(
   client: pg.PoolClient
 ): Promise<StatStatementsInfoRow | null> {
   try {
-    const r = await client.query<StatStatementsInfoRow>(
+    const r = await safeQuery<StatStatementsInfoRow>(
+      client,
       `SELECT * FROM pg_stat_statements_info LIMIT 1`
     );
     return r.rows[0] ?? null;

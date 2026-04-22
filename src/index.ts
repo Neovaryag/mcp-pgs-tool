@@ -83,8 +83,61 @@ function requirePool() {
 
 let pool = getDatabaseUrl() ? createPool(getDatabaseUrl()!) : null;
 
+const SENSITIVE_KEYWORD_RE =
+  /(password|passwd|pwd|secret|token|api[_-]?key|session|cookie|auth|cvv|cvc|card|pan|iban|account|email|phone|mobile|passport|ssn|inn|snils)/i;
+const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+const PHONE_RE = /\b(?:\+?\d[\d\s().-]{8,}\d)\b/g;
+const PAN_RE = /\b(?:\d[ -]*?){13,19}\b/g;
+
+function luhnLooksValid(raw: string): boolean {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length < 13 || digits.length > 19) return false;
+  let sum = 0;
+  let odd = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let n = Number(digits[i]);
+    if (odd) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    odd = !odd;
+  }
+  return sum % 10 === 0;
+}
+
+function maskText(value: string): string {
+  let out = value.replace(EMAIL_RE, "***@***");
+  out = out.replace(PHONE_RE, "[masked-phone]");
+  out = out.replace(PAN_RE, (m) => (luhnLooksValid(m) ? "[masked-card]" : m));
+  return out;
+}
+
+function sanitizeValue(value: unknown, keyHint?: string): unknown {
+  if (value == null) return value;
+  if (typeof value === "string") {
+    if (keyHint && SENSITIVE_KEYWORD_RE.test(keyHint)) return "[redacted]";
+    return maskText(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    if (keyHint && SENSITIVE_KEYWORD_RE.test(keyHint)) return "[redacted]";
+    return value;
+  }
+  if (Array.isArray(value)) return value.map((v) => sanitizeValue(v));
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = sanitizeValue(v, k);
+    }
+    return out;
+  }
+  return value;
+}
+
 function jsonText(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+  const safe = sanitizeValue(data);
+  return { content: [{ type: "text" as const, text: JSON.stringify(safe, null, 2) }] };
 }
 
 const server = new Server(

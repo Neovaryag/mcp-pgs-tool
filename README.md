@@ -1,308 +1,344 @@
 # mcp-pgs-tool
 
-**TypeScript** [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **PostgreSQL**: database schema, table activity stats, heuristics for “cold” columns, columns not covered by any index, top queries from **`pg_stat_statements`** (when the extension is installed), and a rough **codebase scan** for table/column name mentions under a local directory.
+MCP-сервер (Model Context Protocol) на **TypeScript** для **PostgreSQL**.  
+Проект даёт инструменты для анализа схемы и активности БД, поиска потенциально «холодных» таблиц/колонок, проверки покрытия индексами, анализа `pg_stat_statements`, а также грубого поиска использования таблиц и колонок в локальном коде.
 
-Transport: **stdio** (one line = one JSON-RPC message, as used by `@modelcontextprotocol/sdk`).
-
----
-
-## Table of contents
-
-- [Requirements](#requirements)
-- [Install and build](#install-and-build)
-- [Environment variables](#environment-variables)
-- [Cursor setup](#cursor-setup)
-- [Tools](#tools)
-- [PostgreSQL: permissions and extensions](#postgresql-permissions-and-extensions)
-- [Testing without Cursor](#testing-without-cursor)
-- [Limitations](#limitations)
-- [Development](#development)
-- [License](#license)
+Транспорт: **stdio** (одна строка = один JSON-RPC пакет).
 
 ---
 
-## Requirements
+## Содержание
 
-| Component | Version |
-|-----------|---------|
-| Node.js | **≥ 20** |
-| PostgreSQL | **12+** recommended (`pg_stat_statements_top` maps `total_time` vs `total_exec_time` automatically) |
+- [Возможности](#возможности)
+- [Требования](#требования)
+- [Установка и сборка](#установка-и-сборка)
+- [Подключение MCP в Cursor](#подключение-mcp-в-cursor)
+- [Подключение MCP в GigaCode CLI](#подключение-mcp-в-gigacode-cli)
+- [Переменные окружения](#переменные-окружения)
+- [Инструменты (tools)](#инструменты-tools)
+- [Безопасность использования](#безопасность-использования)
+- [Права PostgreSQL и расширения](#права-postgresql-и-расширения)
+- [Проверка работы (smoke test)](#проверка-работы-smoke-test)
+- [Ограничения и интерпретация результатов](#ограничения-и-интерпретация-результатов)
+- [Разработка](#разработка)
 
 ---
 
-## Install and build
+## Возможности
+
+- Получение схем, таблиц и колонок из `information_schema`.
+- Статистика активности таблиц из `pg_stat_user_tables`.
+- Эвристика «подозрительных/малополезных» колонок по `pg_stats`.
+- Поиск колонок, которые не входят ни в один индекс.
+- Топ SQL-запросов из `pg_stat_statements`.
+- Скан локального репозитория на упоминания таблиц/колонок.
+- Встроенная защита:
+  - только read-only SQL (на уровне runtime-политики),
+  - маскирование чувствительных данных в ответах.
+
+---
+
+## Требования
+
+| Компонент | Версия |
+|-----------|--------|
+| Node.js | **>= 20** |
+| PostgreSQL | рекомендуется **12+** |
+
+---
+
+## Установка и сборка
 
 ```bash
-git clone <your-repo-url>
+git clone <URL_репозитория>
 cd mcp-pgs-tool
 npm install
 npm run build
 ```
 
-After a successful build, the entry file is **`dist/index.js`**.
+После сборки основной entrypoint: `dist/index.js`.
 
-Manual run (reads JSON-RPC from stdin; not meant for interactive use):
-
-**Windows (cmd)**
-
-```bat
-set DATABASE_URL=postgres://user:password@host:5432/dbname
-node dist\index.js
-```
-
-**macOS / Linux**
-
-```bash
-export DATABASE_URL=postgres://user:password@host:5432/dbname
-node dist/index.js
-```
-
-Optional global CLI via `npm link` (exposes the `mcp-pgs-tool` binary pointing at `dist/index.js`).
+Также есть корневой `index.js` (shim), который подгружает `dist/index.js`.
 
 ---
 
-## Environment variables
+## Подключение MCP в Cursor
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| **`DATABASE_URL`** | Yes, for any tool that hits the database | PostgreSQL connection URI, e.g. `postgres://user:pass@localhost:5432/mydb` or `postgresql://...` |
+Отредактируйте файл `~/.cursor/mcp.json` (на Windows: `C:\Users\<user>\.cursor\mcp.json`) и добавьте сервер.
 
-If `DATABASE_URL` is missing, the process still starts, but DB tools return an error payload in the tool result (JSON with `ok: false` / `error`).
-
----
-
-## Cursor setup
-
-In **Cursor Settings → MCP**, register a server. Use **absolute paths** for `node` and the entry script, and pass `DATABASE_URL` under `env`.
-
-**Entry script:** prefer **`dist/index.js`** after `npm run build`. The repo root **`index.js`** is a thin shim that loads `dist/index.js` (so configs that point at `…/mcp-pgs-tool/index.js` work once the project is built).
-
-### Windows example
+Пример для Windows:
 
 ```json
 {
   "mcpServers": {
-    "pgs-tool": {
-      "command": "C:\\Program Files\\nodejs\\node.exe",
+    "mcp-pgs-tool": {
+      "command": "node",
       "args": [
-        "C:\\Users\\YOUR_USER\\IdeaProjects\\mcp-pgs-tool\\dist\\index.js"
+        "C:/Users/<USER>/IdeaProjects/mcp-pgs-tool/dist/index.js"
       ],
       "env": {
-        "DATABASE_URL": "postgres://USER:PASSWORD@localhost:5432/DBNAME"
+        "DATABASE_URL": "postgresql://DB_USER:DB_PASSWORD@HOST:5432/DB_NAME"
       }
     }
   }
 }
 ```
 
-If `node` is on `PATH`:
+Важно:
+
+- Путь должен указывать на **существующий** файл (`dist/index.js` или корневой `index.js`).
+- После изменения конфига перезапустите MCP/IDE.
+- Если используете корневой `index.js`, проект должен быть собран (`npm run build`), иначе shim завершится ошибкой.
+
+---
+
+## Подключение MCP в GigaCode CLI
+
+Для GigaCode CLI добавьте сервер в файл проекта:
+
+- `.gigacode/settings.json`
+
+Пример конфигурации:
 
 ```json
 {
   "mcpServers": {
-    "pgs-tool": {
+    "mcp-pgs-tool": {
       "command": "node",
-      "args": ["C:\\full\\path\\to\\mcp-pgs-tool\\dist\\index.js"],
+      "args": [
+        "C:/Users/<USER>/IdeaProjects/mcp-pgs-tool/index.js"
+      ],
       "env": {
-        "DATABASE_URL": "postgres://USER:PASSWORD@localhost:5432/DBNAME"
+        "DATABASE_URL": "postgresql://DB_USER:DB_PASSWORD@HOST:5432/DB_NAME"
       }
     }
   }
 }
 ```
 
-Reload MCP or Cursor and confirm tools whose names start with `pg_` appear in the tool list.
+Рекомендации:
+
+- Убедитесь, что выполнен `npm run build` и существует `dist/index.js`.
+- Корневой `index.js` — это shim, он подгружает `dist/index.js` после сборки.
+- Если у GigaCode CLI есть команда перезагрузки MCP-конфигурации, выполните её после изменения файла.
+- Не храните реальные пароли в открытом репозитории; используйте локальный конфиг или секреты среды.
 
 ---
 
-## Tools
+## Переменные окружения
 
-Most tools return a single text block `content[0].text` containing **JSON** (easy for agents to parse).
+| Переменная | Обязательность | Назначение |
+|------------|----------------|-----------|
+| `DATABASE_URL` | Да | PostgreSQL URI для подключения |
+
+Пример:
+
+```text
+postgresql://user:password@localhost:5432/mydb
+```
+
+Если `DATABASE_URL` не задан, сервер стартует, но DB-инструменты вернут ошибку.
+
+---
+
+## Инструменты (tools)
 
 ### `pg_health`
-
-Connection check: server version, current database name, whether the **`pg_stat_statements`** extension exists.
-
-| Parameter | Type | Default |
-|-----------|------|---------|
-| — | — | — |
-
----
+Проверка подключения к БД:
+- версия PostgreSQL,
+- текущая БД,
+- наличие расширения `pg_stat_statements`.
 
 ### `pg_list_schemas`
-
-Schemas from `information_schema`, excluding system schemas (`pg_catalog`, `information_schema`, `pg_toast`).
-
----
+Список пользовательских схем (без системных).
 
 ### `pg_list_tables`
+Список таблиц/представлений:
+- схема,
+- имя,
+- тип,
+- оценка числа строк (`reltuples`).
 
-Tables and views: schema, name, type, row estimate from `reltuples`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `schemas` | `string[]?` | Only include these schemas |
-
----
+Параметры:
+- `schemas?: string[]` — фильтр по схемам.
 
 ### `pg_list_columns`
+Список колонок:
+- имя таблицы/схемы,
+- имя колонки,
+- тип,
+- nullable,
+- default.
 
-Columns from `information_schema`: data type, nullability, default.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `schema` | `string?` | Filter by schema |
-| `table` | `string?` | Filter by table name |
-
----
+Параметры:
+- `schema?: string`
+- `table?: string`
 
 ### `pg_table_activity`
+Активность таблиц из `pg_stat_user_tables`:
+- `seq_scan`, `idx_scan`,
+- `n_tup_ins`, `n_tup_upd`, `n_tup_del`,
+- `seq_tup_read`, `idx_tup_fetch`,
+- даты vacuum/analyze.
 
-Stats from **`pg_stat_user_tables`**: sequential/index scans, tuple inserts/updates/deletes, `seq_tup_read`, `idx_tup_fetch`, maintenance timestamps.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `order` | `"hot"` \| `"cold"` | `"cold"` | Sort by combined activity |
-| `limit` | `integer` | `50` | 1…500 |
-
-With **`order: "cold"`**, rows are sorted by **ascending**  
-`(seq_tup_read + idx_tup_fetch + n_tup_ins + n_tup_upd + n_tup_del)` — candidates for “low traffic” tables relative to accumulated stats.
-
----
+Параметры:
+- `order: "hot" | "cold"` (по умолчанию `"cold"`)
+- `limit: number` (1..500)
 
 ### `pg_column_stats_suspicious`
+Эвристика по `pg_stats`:
+- `null_frac`,
+- `n_distinct`,
+- `correlation`,
+- `most_common_vals`.
 
-Planner statistics from **`pg_stats`**: `null_frac`, `n_distinct`, `correlation`, truncated `most_common_vals`.
-
-| Parameter | Type | Default |
-|-----------|------|---------|
-| `limit` | `integer` | `80` (1…500) |
-| `minNullFrac` | `number` | `0.5` (0…1) |
-
-This is **not** a runtime “column read counter”; it is an **ANALYZE-based heuristic**.
-
----
+Параметры:
+- `limit: number` (1..500)
+- `minNullFrac: number` (0..1)
 
 ### `pg_columns_not_in_any_index`
+Колонки пользовательских таблиц, которые не входят ни в один индекс.
 
-Columns of user tables that never appear in any index **`indkey`** (plain indexed attributes only; expression indexes are not resolved to column names).
-
-| Parameter | Type | Default |
-|-----------|------|---------|
-| `limit` | `integer` | `200` (1…2000) |
-
----
+Параметры:
+- `limit: number` (1..2000)
 
 ### `pg_stat_statements_top`
+Топ запросов из `pg_stat_statements`.
 
-Top normalized statements from **`pg_stat_statements`**. Requires the extension (see [PostgreSQL: permissions and extensions](#postgresql-permissions-and-extensions)).
+Параметры:
+- `sortBy`: `total_time | mean_time | calls | rows | shared_blks_read`
+- `limit`: 1..200
+- `minCalls`
+- `queryContains?`
+- `currentDatabaseOnly`
+- `maxQueryChars`
+- `includeInfo`
 
-Response fields **`total_time_ms`** and **`mean_time_ms`** map to `total_exec_time` / `mean_exec_time` on PostgreSQL 13+, and to `total_time` / `mean_time` on PostgreSQL 12.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `sortBy` | see below | `"total_time"` | Sort key (descending) |
-| `limit` | `integer` | `30` | 1…200 |
-| `minCalls` | `integer` | `1` | `calls >= minCalls` |
-| `queryContains` | `string?` | — | Substring match on `query` (`ILIKE`, `%` and `_` escaped) |
-| `currentDatabaseOnly` | `boolean` | `true` | Restrict to current DB via `dbid` |
-| `maxQueryChars` | `integer` | `4000` | Truncate returned `query` text (200…32000) |
-| `includeInfo` | `boolean` | `false` | Include a row from `pg_stat_statements_info` when the view exists |
-
-**`sortBy` values:** `total_time`, `mean_time`, `calls`, `rows`, `shared_blks_read`.
-
-For **`mean_time`**, `minCalls: 1` is often noisy; try **`minCalls`** in the 5–20 range.
-
----
+Примечание по времени:
+- PostgreSQL 13+: `total_exec_time` / `mean_exec_time`
+- PostgreSQL 12: `total_time` / `mean_time`
 
 ### `pg_scan_codebase_usage`
+Сканирует локальный код по `codebaseRoot` и ищет целые слова:
+- имя таблицы,
+- `schema.table`,
+- имя колонки,
+- `table.column`,
+- `schema.table.column`.
 
-Recursively walks **`codebaseRoot`** (skips `node_modules`, `.git`, `dist`, etc.) and searches for **whole-word** identifiers: table names, column names, and qualified forms such as `schema.table`, `table.column`, and `schema.table.column`.
+Параметры:
+- `codebaseRoot` (обязателен)
+- `schemas?`
+- `maxTables`
+- `maxColumnsPerTable`
+- `maxFiles`
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `codebaseRoot` | `string` | **required** | Absolute path to the source tree |
-| `schemas` | `string[]?` | — | Limit which schemas’ tables are considered |
-| `maxTables` | `integer` | `120` | Max base tables analyzed |
-| `maxColumnsPerTable` | `integer` | `40` | Max columns per table (by `information_schema` order) |
-| `maxFiles` | `integer` | `8000` | Max files visited |
-
-The response includes scan summary, sample matching lines, and **`possiblyNotReferencedInCode`**: identifiers with **zero** matches across the checked name variants.
-
----
-
-## PostgreSQL: permissions and extensions
-
-### Reading statistics views
-
-For **`pg_stat_user_tables`**, **`pg_stats`**, and **`pg_stat_statements`**, the connecting role often needs **`pg_read_all_stats`** (or superuser). Permission errors are returned as JSON in the tool output.
-
-### Enabling `pg_stat_statements`
-
-1. In `postgresql.conf` (or via `ALTER SYSTEM`):
-
-   ```text
-   shared_preload_libraries = 'pg_stat_statements'
-   ```
-
-2. Restart the PostgreSQL instance.
-
-3. In the target database:
-
-   ```sql
-   CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-   ```
-
-Without the extension, **`pg_stat_statements_top`** returns `ok: false` with guidance; **`pg_health`** reports `pg_stat_statements: false`.
+Выход:
+- summary скана,
+- sample hit-строки,
+- `possiblyNotReferencedInCode` (кандидаты «не найдено в коде»).
 
 ---
 
-## Testing without Cursor
+## Безопасность использования
 
-Build and run the **stdio smoke test** (`initialize` → `tools/list` → `tools/call` on `pg_health`):
+В проекте реализованы 2 уровня защиты.
+
+### 1) Read-only политика SQL
+
+Все запросы проходят через `safeQuery()` в `src/db.ts`.
+
+Разрешено только:
+- `SELECT`
+- `WITH`
+- `SHOW`
+- `EXPLAIN`
+
+Блокируется:
+- DML/DDL/управляющие операции (`INSERT`, `UPDATE`, `DELETE`, `CREATE`, `ALTER`, `DROP`, `GRANT`, `SET`, `COPY`, и т.д.),
+- multi-statement SQL (например, `SELECT ...; DELETE ...`).
+
+Итог: инструменты MCP в этом сервере **не могут менять данные** в БД.
+
+### 2) Маскирование чувствительных данных
+
+Перед возвратом ответа клиенту выполняется санитизация (`src/index.ts`):
+
+- По ключам полей (например: `password`, `token`, `secret`, `card`, `account`, `email`, `phone`) значения редактируются в `"[redacted]"`.
+- В строках маскируются шаблоны:
+  - email -> `***@***`
+  - телефон -> `[masked-phone]`
+  - номер карты (с проверкой Luhn) -> `[masked-card]`
+
+Это уменьшает риск утечки PII/финансовых данных в ответах tools.
+
+---
+
+## Права PostgreSQL и расширения
+
+Для некоторых статистических представлений нужны повышенные права (часто `pg_read_all_stats`).
+
+Для `pg_stat_statements_top` нужно:
+
+1. Включить расширение в preload:
+
+```text
+shared_preload_libraries = 'pg_stat_statements'
+```
+
+2. Перезапустить PostgreSQL.
+3. Выполнить в нужной БД:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+```
+
+---
+
+## Проверка работы (smoke test)
 
 ```bash
 npm run build
 npm run smoke
 ```
 
-- If **`DATABASE_URL` is unset**, the smoke test expects `pg_health` to report a configuration error.
-- If **`DATABASE_URL` is set** and the database is reachable, it expects `ok: true` from `pg_health`.
+Скрипт: `scripts/mcp-smoke.mjs`.
 
-Script: `scripts/mcp-smoke.mjs`.
-
----
-
-## Limitations
-
-1. **`pg_stat_*`** reflects accumulated statistics since the last reset or instance start (and depends on stats collection settings).
-2. PostgreSQL does **not** expose per-column “read counts” at the engine level in the same way as table-level stats; **`pg_column_stats_suspicious`** uses **planner statistics**, not application-level tracing.
-3. **`pg_scan_codebase_usage`** misses names inside **dynamic SQL**, some **ORM** patterns without literal identifiers, generated files outside the walk, and may **false-positive** when SQL identifiers collide with common code words.
-4. On Windows, escape backslashes in JSON (`\\`) or use forward slashes where your MCP client accepts them.
+Проверяет:
+- MCP handshake (`initialize`),
+- `tools/list`,
+- вызов `pg_health`.
 
 ---
 
-## Development
+## Ограничения и интерпретация результатов
 
-| Command | Purpose |
-|---------|---------|
-| `npm run dev` | Run `src/index.ts` with `tsx` (no prior build) |
-| `npm run build` | Compile to `dist/` |
-| `npm run start` | `node dist/index.js` |
-| `npm run smoke` | MCP stdio smoke test |
+1. Метрики `pg_stat_*` накопительные (с момента старта/сброса статистики).
+2. В PostgreSQL нет прямого универсального счётчика «сколько раз читали конкретную колонку»; `pg_column_stats_suspicious` — это эвристика.
+3. `pg_scan_codebase_usage` может:
+   - пропускать динамический SQL/ORM-построение,
+   - давать ложные совпадения по похожим словам.
+4. Маскирование в ответах снижает риски, но не заменяет полноценную DLP/политику доступа на стороне БД и инфраструктуры.
 
-Source layout:
+---
 
-| Path | Role |
+## Разработка
+
+| Команда | Назначение |
+|---------|------------|
+| `npm run dev` | запуск `src/index.ts` через `tsx` |
+| `npm run build` | компиляция в `dist/` |
+| `npm run start` | запуск `node dist/index.js` |
+| `npm run smoke` | smoke-проверка MCP |
+
+Структура:
+
+| Путь | Роль |
 |------|------|
-| `src/index.ts` | MCP server and tool registration |
-| `src/queries.ts` | PostgreSQL SQL |
-| `src/codeScan.ts` | File walk and identifier search |
-| `src/db.ts` | `pg` connection pool |
-| `src/config.ts` | Reads `DATABASE_URL` |
+| `src/index.ts` | MCP сервер и маршрутизация tools |
+| `src/queries.ts` | SQL-запросы к PostgreSQL |
+| `src/db.ts` | пул подключений + read-only guard |
+| `src/codeScan.ts` | скан исходников на упоминания идентификаторов |
+| `src/config.ts` | чтение `DATABASE_URL` |
+| `scripts/mcp-smoke.mjs` | локальный smoke-test |
 
----
-
-## License
-
-No `LICENSE` file is bundled yet; add one in the repository if you need an explicit terms of use.
